@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "$HOME/.clawd/cc_status_hook.py" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "$HOME/.clawd/cc_status_hook.py" }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "$HOME/.clawd/cc_status_hook.py" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "$HOME/.clawd/cc_status_hook.py" }] }
+    ]
+  }
+}
