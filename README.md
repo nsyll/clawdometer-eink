@@ -4,7 +4,9 @@
 
 Runs on a single off-the-shelf board — the **Waveshare ESP32-S3-ePaper-1.54** — with zero wiring and zero soldering. E-ink means it sits on your desk like a printed card: silent, always readable, about a week per battery charge.
 
-<!-- photo: device on desk showing the meters -->
+![Clawdometer showing a QUESTION banner next to the MacBook running Claude Code — the device mirrors the exact usage numbers from Claude Code's own panel](docs/images/hero-question.jpg)
+
+*Claude just ended its turn with a question — the device shows it (and chimed). The meters match Claude Code's own usage panel on the laptop, live over BLE.*
 
 ## What it does
 
@@ -22,6 +24,8 @@ Runs on a single off-the-shelf board — the **Waveshare ESP32-S3-ePaper-1.54** 
   | Battery low | slow quiet droop |
 
 - **Usage statistics** — press BOOT to cycle: meters → **today** (tokens per hour) → **7 days** → **30 days** (per day), each with tokens, minutes Claude worked, minutes it waited on you, session and tool-call counts. Computed locally from Claude Code's own logs — fully backfilled, no cloud.
+
+![Clawdometer showing the WORKING banner while Claude Code runs](docs/images/working.jpg)
 - **A week per charge** — deep sleep when nobody's around (the e-paper keeps its image at zero power, with a little "zZ"), relaxed BLE intervals, clock-gated audio, and a clean self-shutdown that protects the LiPo when truly empty.
 
 ## Hardware
