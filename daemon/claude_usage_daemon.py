@@ -813,7 +813,17 @@ async def poll_active_payload(selector: PlanSelector = _SELECTOR) -> dict | None
             payloads[d] = payload
             sessions[d] = int(payload.get("s", 0) or 0)
     if not payloads:
-        return None
+        # API unusable (expired token, network down). The CC status banner and
+        # the usage statistics come from LOCAL files and are still perfectly
+        # good — push those with the meters marked unknown ("--" on the device)
+        # instead of leaving the screen to go stale entirely.
+        log("API unavailable — pushing local-only payload (meters shown as --)")
+        p = {"s": -1, "sr": -1, "w": -1, "wr": -1,
+             "st": "unknown", "acct": "", "ok": False}
+        add_chime_field(p)
+        add_clock_fields(p)
+        p.update(compute_usage_stats())
+        return p
     active = selector.choose(sessions)
     if len(dirs) > 1:
         log(f"Active plan: {active} (s={sessions[active]})")

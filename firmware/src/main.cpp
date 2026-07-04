@@ -39,20 +39,25 @@ static const unsigned long HEARTBEAT_MS = 5UL * 60 * 1000;  // 5-min idle redraw
 
 // --- SLEEP mode: deep-sleep when nobody is around. The e-paper keeps the last
 // image at zero power, so the user loses nothing but instant updates. Any
-// button wakes it; a 30-min timer wake sniffs for the daemon (90s covers the
-// daemon's 60s-capped retry backoff + 8s scan).
-static const unsigned long UNLINKED_SLEEP_MS = 5UL * 60 * 1000;   // no Mac found
+// button wakes it; a 10-min timer wake sniffs for the daemon (90s covers the
+// daemon's 60s-capped retry backoff + 8s scan), so a freshly started daemon
+// finds a sleeping device within ~10 minutes without a button press.
+// Before the FIRST successful link since power-on the device stays awake much
+// longer — "plug in, start daemon" must always just work.
+static const unsigned long UNLINKED_SLEEP_MS   = 5UL * 60 * 1000;   // no Mac found (after first link)
+static const unsigned long NEVERLINKED_SLEEP_MS = 30UL * 60 * 1000; // no Mac found (never linked yet)
 static const unsigned long SILENT_SLEEP_MS   = 20UL * 60 * 1000;  // linked but daemon mute
 static const unsigned long SNIFF_WINDOW_MS   = 90UL * 1000;       // timer-wake look-around
-static const uint64_t      SLEEP_TIMER_US    = 30ULL * 60 * 1000000;
+static const uint64_t      SLEEP_TIMER_US    = 10ULL * 60 * 1000000;
 static RTC_DATA_ATTR bool g_sleptBadge = false;  // zZ already on the persisted image
+static RTC_DATA_ATTR bool g_everLinked = false;  // daemon seen since power-on (survives sleep)
 static unsigned long g_lastLinkMs = 0;   // last time the BLE link was up (or a button woke us)
 static unsigned long g_lastDataMs = 0;   // last daemon push
 static bool g_sniff = false;             // in a timer-wake sniff window
 static unsigned long g_sniffDeadline = 0;
 
 static void goToSleep() {
-  Serial.println("[Clawd] deep sleep (button or 30-min timer wakes)");
+  Serial.println("[Clawd] deep sleep (button or 10-min timer wakes)");
   if (!g_sleptBadge) {
     // Re-render once with the zZ marker; clear the realtime CC/status banners —
     // showing WORKING while asleep would be a lie. Meters/stats stay (last known).
@@ -215,7 +220,7 @@ void loop() {
   // track BLE link state for the UI. After a sleep-wake the panel still shows
   // the (useful) last image — don't let a dataless link flip wipe it.
   bool linkedNow = ble.connected();
-  if (linkedNow) g_lastLinkMs = now;
+  if (linkedNow) { g_lastLinkMs = now; g_everLinked = true; }
   if (linkedNow != g_st.linked) {
     g_st.linked = linkedNow;
     if (g_st.haveData || !g_sleptBadge) g_dirty = true;
@@ -224,8 +229,9 @@ void loop() {
   // SLEEP decisions (before any render): nobody around -> deep sleep.
   if (g_sniff && now > g_sniffDeadline) goToSleep();
   if (!g_sniff) {
-    if (!linkedNow && now - g_lastLinkMs > UNLINKED_SLEEP_MS) goToSleep();
-    if (linkedNow  && now - g_lastDataMs > SILENT_SLEEP_MS)   goToSleep();
+    unsigned long unlinkedLimit = g_everLinked ? UNLINKED_SLEEP_MS : NEVERLINKED_SLEEP_MS;
+    if (!linkedNow && now - g_lastLinkMs > unlinkedLimit)   goToSleep();
+    if (linkedNow  && now - g_lastDataMs > SILENT_SLEEP_MS) goToSleep();
   }
 
   // BOOT: cycle meters -> today(hourly) -> 7 days -> 30 days -> meters.
