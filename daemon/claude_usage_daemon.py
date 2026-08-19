@@ -171,10 +171,15 @@ class Dashboard:
         lines.append(f" Claude Code {cc_disp}")
         lines.append(rule)
 
+        # -1 is the "unknown" sentinel (API unusable) — render it as "--%",
+        # the same way the device does, never as a negative percentage.
+        def pct_txt(v):
+            return f"{v:>3}%" if isinstance(v, int) and v >= 0 else " --%"
         s, w = p.get("s"), p.get("w")
-        lines.append(f" Session 5h {s if s is not None else '--':>4}%"
-                     f"  {_bar(s)}  resets {_fmt_reset_mins(p.get('sr', -1))}")
-        lines.append(f" Weekly 7d  {w if w is not None else '--':>4}%"
+        stale = "" if p.get("ok", True) else f"  {A['yellow']}(API unavailable){A['reset']}"
+        lines.append(f" Session 5h {pct_txt(s)}"
+                     f"  {_bar(s)}  resets {_fmt_reset_mins(p.get('sr', -1))}{stale}")
+        lines.append(f" Weekly 7d  {pct_txt(w)}"
                      f"  {_bar(w)}  resets {_fmt_reset_mins(p.get('wr', -1))}")
         lines.append(rule)
 
