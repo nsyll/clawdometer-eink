@@ -119,6 +119,8 @@ class Dashboard:
         self.push_ok: bool = True
         self.push_size: int = 0
         self.linked = False
+        # why the API is unusable, shown next to the 5h meter (None = fine)
+        self.token_note: str | None = None
         self._painted = False
         if self.enabled:
             import atexit
@@ -176,7 +178,8 @@ class Dashboard:
         def pct_txt(v):
             return f"{v:>3}%" if isinstance(v, int) and v >= 0 else " --%"
         s, w = p.get("s"), p.get("w")
-        stale = "" if p.get("ok", True) else f"  {A['yellow']}(API unavailable){A['reset']}"
+        reason = self.token_note or "API unavailable"
+        stale = "" if p.get("ok", True) else f"  {A['yellow']}({reason}){A['reset']}"
         lines.append(f" Session 5h {pct_txt(s)}"
                      f"  {_bar(s)}  resets {_fmt_reset_mins(p.get('sr', -1))}{stale}")
         lines.append(f" Weekly 7d  {pct_txt(w)}"
@@ -213,6 +216,22 @@ def log(msg: str) -> None:
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def set_token_note(note: str | None) -> None:
+    """Record why the API is unusable, logging only when it changes.
+
+    The dashboard prints this next to the 5h meter; --plain mode gets one line
+    per transition instead of a repeat on every poll.
+    """
+    if note == DASH.token_note:
+        return
+    was = DASH.token_note
+    DASH.token_note = note
+    if note:
+        log(note)
+    elif was:
+        log("Token accepted again — meters live")
+
+
 def _extract_access_token(blob: str) -> str | None:
     """Pull the accessToken out of a credentials blob.
 
@@ -245,7 +264,51 @@ def _extract_access_token(blob: str) -> str | None:
     return None
 
 
-def _read_token_keychain() -> str | None:
+def _extract_expires_at(blob: str) -> float | None:
+    """Pull expiresAt out of a credentials blob as epoch seconds, if present.
+
+    Claude Code writes milliseconds; other shapes may use seconds, so
+    normalise. Returns None when the blob carries no expiry (a raw token with
+    no JSON wrapper, say) — callers must read that as "unknown", not "expired".
+    """
+    raw = None
+    try:
+        data = json.loads(blob.strip())
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict):
+        if isinstance(data.get("expiresAt"), (int, float)):
+            raw = data["expiresAt"]
+        else:
+            for v in data.values():
+                if isinstance(v, dict) and isinstance(v.get("expiresAt"), (int, float)):
+                    raw = v["expiresAt"]
+                    break
+    if raw is None:
+        m = re.search(r'"expiresAt"\s*:\s*(\d+)', blob)
+        if m:
+            raw = int(m.group(1))
+    if raw is None:
+        return None
+    return raw / 1000.0 if raw > 1e11 else float(raw)
+
+
+def token_expiry_note(expires_at: float | None, now: float | None = None) -> str | None:
+    """Explain an expired OAuth token, or None when it is valid (or unknown).
+
+    Diagnosis only — nothing in this daemon refreshes the token. Only the
+    Claude Code CLI spends the refreshToken sitting beside it in the Keychain,
+    so the fix is always to run `claude` once.
+    """
+    if not expires_at:
+        return None
+    ago = (now or time.time()) - expires_at
+    if ago <= 0:
+        return None
+    return f"token expired {_fmt_minutes(int(ago // 60))} ago — run `claude`"
+
+
+def _read_keychain_blob() -> str | None:
     try:
         out = subprocess.run(
             [
@@ -268,7 +331,7 @@ def _read_token_keychain() -> str | None:
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         log(f"Keychain access error: {e}")
         return None
-    return _extract_access_token(out.stdout)
+    return out.stdout
 
 
 def read_config_dirs() -> list[Path]:
@@ -295,8 +358,8 @@ def read_config_dirs() -> list[Path]:
     return dirs or [DEFAULT_CONFIG_DIR]
 
 
-def read_token_for(config_dir: Path) -> str | None:
-    """Read the OAuth token for one config dir.
+def read_token_for(config_dir: Path) -> tuple[str | None, float | None]:
+    """Read the OAuth token for one config dir, with its expiry.
 
     Linux: each dir keeps its own ``<dir>/.credentials.json``. macOS: the default
     install stores the token in Keychain with no file, so for the default dir we
@@ -304,16 +367,22 @@ def read_token_for(config_dir: Path) -> str | None:
     single-plan macOS behavior. Additional macOS dirs are read from their files;
     a work plan whose token lives only in the single Keychain entry can't be told
     apart there (documented follow-up).
+
+    Returns (token, expires_at) — expires_at in epoch seconds, or None when the
+    blob carries no expiry.
     """
+    blob = None
     cred = config_dir / ".credentials.json"
     try:
         if cred.exists():
-            return _extract_access_token(cred.read_text())
+            blob = cred.read_text()
     except OSError as e:
         log(f"Error reading credentials in {config_dir}: {e}")
-    if sys.platform == "darwin" and config_dir == DEFAULT_CONFIG_DIR:
-        return _read_token_keychain()
-    return None
+    if blob is None and sys.platform == "darwin" and config_dir == DEFAULT_CONFIG_DIR:
+        blob = _read_keychain_blob()
+    if not blob:
+        return None, None
+    return _extract_access_token(blob), _extract_expires_at(blob)
 
 
 def load_cached_address() -> str | None:
@@ -808,11 +877,18 @@ async def poll_active_payload(selector: PlanSelector = _SELECTOR) -> dict | None
     dirs = read_config_dirs()
     payloads: dict[Path, dict] = {}
     sessions: dict[Path, int] = {}
+    notes: list[str] = []
     for d in dirs:
-        token = read_token_for(d)
+        token, expires_at = read_token_for(d)
         if not token:
             log(f"No token in {d}; skipping")
+            notes.append("no token — run `claude`")
             continue
+        # Diagnosis only: still make the call, so a skewed clock or an
+        # unexpected blob shape can never veto a token that actually works.
+        note = token_expiry_note(expires_at)
+        if note:
+            notes.append(note)
         payload = await poll_api(token)
         if payload is not None:
             payloads[d] = payload
@@ -822,6 +898,7 @@ async def poll_active_payload(selector: PlanSelector = _SELECTOR) -> dict | None
         # the usage statistics come from LOCAL files and are still perfectly
         # good — push those with the meters marked unknown ("--" on the device)
         # instead of leaving the screen to go stale entirely.
+        set_token_note(notes[0] if notes else "API unavailable")
         log("API unavailable — pushing local-only payload (meters shown as --)")
         p = {"s": -1, "sr": -1, "w": -1, "wr": -1,
              "st": "unknown", "acct": "", "ok": False}
@@ -829,6 +906,7 @@ async def poll_active_payload(selector: PlanSelector = _SELECTOR) -> dict | None
         add_clock_fields(p)
         p.update(compute_usage_stats())
         return p
+    set_token_note(None)
     active = selector.choose(sessions)
     if len(dirs) > 1:
         log(f"Active plan: {active} (s={sessions[active]})")
